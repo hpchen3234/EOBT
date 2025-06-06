@@ -1,9 +1,11 @@
 import  numpy as np
 import pandas as pd 
-
+from itertools import chain
+import ast
 
 if __name__=='__main__':
      # 读取飞行计划
+
         flight_plan = pd.read_csv(r'D:\eobt_Project\ZUUU\zuuu_data\20250307-双流拷贝\zuuu_20250306_arrdep_fpl.csv')
         flight_plan['lintime'] = pd.to_datetime(flight_plan['lintime'])
         flight_plan['taxtime'] = pd.to_datetime(flight_plan['taxtime'])
@@ -43,21 +45,24 @@ if __name__=='__main__':
         fine_result=pd.read_csv(r'D:\eobt_Project\ZUUU\surface_traj_match\fine_result_df.csv')
         # 对于这个结果  添加type说明
         fine_result['type'] = fine_result.apply(lambda row: taxiway_lookup[frozenset([row['node_1'], row['node_2']])]['type'], axis=1)
-       
+        
         # 对数据库进行划分 不要这么细
        # 定义新的分组键
         group_keys = ['flight_type', 'type', 'typename', 'taxiname', 'seg_type', 'direct']
         # 重新分组并聚合timelst
-        new_df =  fine_result.groupby(group_keys).agg({'timelst': lambda x: np.concatenate(x.tolist())}).reset_index()
+        fine_result['taxitime_distribution'] = fine_result['taxitime_distribution'].apply(ast.literal_eval)
+        fine_result['speed_distribution'] = fine_result['speed_distribution'].apply(ast.literal_eval)
 
-        # 计算新的统计值
-        new_df['taxitime_max'] = new_df['timelst'].apply(lambda x: np.max(x))
-        new_df['taxitime_min'] = new_df['timelst'].apply(lambda x: np.min(x))
-        new_df['taxitime_mean'] = new_df['timelst'].apply(lambda x: np.mean(x))
-        new_df['taxitime_25%'] = new_df['timelst'].apply(lambda x: np.percentile(x, 25))
-        new_df['taxitime_75%'] = new_df['timelst'].apply(lambda x: np.percentile(x, 75))
+        coarse_results_df = fine_result.groupby(group_keys).agg({'taxitime_distribution': lambda x: list(chain.from_iterable(x.tolist())), 
+                                                                 'speed_distribution': lambda x: list(chain.from_iterable(x.tolist()))}).reset_index() 
 
-        
+        coarse_results_df['taxitime_max'] = coarse_results_df['taxitime_distribution'].apply(lambda x: np.max(x))
+        coarse_results_df['taxitime_min'] = coarse_results_df['taxitime_distribution'].apply(lambda x: np.min(x))
+        coarse_results_df['taxitime_mean'] = coarse_results_df['taxitime_distribution'].apply(lambda x: np.mean(x))
+        coarse_results_df['taxitime_25%'] =coarse_results_df['taxitime_distribution'].apply(lambda x: np.percentile(x, 25))
+        coarse_results_df['taxitime_75%'] = coarse_results_df['taxitime_distribution'].apply(lambda x: np.percentile(x, 75))
+
+        coarse_results_df['speed_mean'] = coarse_results_df['speed_distribution'].apply(lambda x: np.mean(x))
 #          计算不同route  对应的滑行时间
 #         创建空列表：
         fp_result = []
@@ -84,27 +89,36 @@ if __name__=='__main__':
 
                     # 那么该路段上的平均速度是
                     #     1 简单统计法 就是 同一滑行道 同一直弯类型上的平均速度
-                    coarse_speed = coarse_results_df[
+                    coarse_speed= coarse_results_df[
                          (coarse_results_df['type'] == type)&  
                         (coarse_results_df['typename'] == typename) &
                         (coarse_results_df['taxiname'] == taxiname) &
                         (coarse_results_df['seg_type'] == seg_type) &
-                        (coarse_results_df['direct'] == direct)]['avg_speed']
+                        (coarse_results_df['direct'] == direct)]['speed_mean']
+                    coarse_time=coarse_results_df[
+                         (coarse_results_df['type'] == type)&  
+                        (coarse_results_df['typename'] == typename) &
+                        (coarse_results_df['taxiname'] == taxiname) &
+                        (coarse_results_df['seg_type'] == seg_type) &
+                        (coarse_results_df['direct'] == direct)]['taxitime_mean']
                             # 出现没有的情况
                     if coarse_speed.empty:
                         coarse_speed = None
                     else:
                         coarse_speed = coarse_speed.item()  # 如果不为空，取值
-
+                    if coarse_time.empty:
+                          coarse_time=None
+                    else:
+                           coarse_time = coarse_time.item()
                     # 计算 taxitime
                     taxitime = seg_dis / coarse_speed if coarse_speed is not None else None
 
                     fp_result.append({'flight_type': flight_type,
                                       'depgate':depgate,
                                       'slipline':slipline,
-                                      'deprwy': deprwy ,
-                                        'route':route_list ,
-                                         'typename': typename,
+                                       'deprwy': deprwy ,
+                                       'route':route_list ,
+                                        'typename': typename,
                                         'taxiname': taxiname,
                                         'seg_type': seg_type,
                                         'direct': direct,
@@ -112,27 +126,36 @@ if __name__=='__main__':
                                         'node_2': n2,
                                         'seg_dis':seg_dis,
                                         'avg_speed': coarse_speed ,
+                                         'avg_time': coarse_time ,
                                         'taxi_time':taxitime
                                 })
         fp_result_df = pd.DataFrame(fp_result)
+        fp_result_df.to_csv(r'D:\eobt_Project\ZUUU\surface_traj_match\fine_result_df.csv')
 
 
-
+  
 #         2.读取统计的20th
         twentyth_taxitime=pd.read_csv(r'D:\eobt_Project\ZUUU\surface_traj_match\zuuu_20250306_dep_fpl_20th_percentile_time.csv')
 #         将结果中的停机坪与跑道 与twentyth_taxitime的停机坪与跑道列对应  匹配twentyth_taxitime中的滑行时间
 
-        result = fp_result_df.merge(
+        fp_result_df = fp_result_df.merge(
                 twentyth_taxitime,
                 on=['depgate', 'deprwy'],  # 按照停机坪和跑道进行匹配
                 how='left'  # 使用左连接，确保 fp_result_df 中的所有行都被保留
         )
+# 删除重复列 
+        suffixes = [col for col in fp_result_df.columns if col.endswith('_x') or col.endswith('_y')]
 
-#        删除其他无用行
-        fp_result_df=result.drop(columns=['Unnamed: 0',  'time_distribution'])
-
-
-
+        # 如果有重复列，删除 _y 列（保留 _x 列）
+        for col in suffixes:
+                if col.endswith('_x'):
+                        original_col = col[:-2]  # 去掉 _x 后缀
+                        if original_col + '_y' in fp_result_df.columns:
+                                fp_result_df = fp_result_df.drop(columns=[original_col + '_y'])
+                                # 将 _x 列重命名为原始列名
+                                fp_result_df = fp_result_df.rename(columns={col: original_col})
+                else:
+                        continue
 #         累加路段时间 需要判断有的路径没有匹配完全 所以时间是空值的
 #         这里先对停机位 跑道进行分组   然后  只选该组第一个为空值 其他不为空值的计算时间累加
 #         注意雷达信息没有涉及停机坪  都是靠拖车牵引而出，所以累加路段时不要加上停机坪的时间
@@ -156,9 +179,10 @@ if __name__=='__main__':
                 elif first_row_is_null and last_row_is_null and middle_rows_are_not_null:
                         # 同上 自己定义在停机坪 以及跑道处的滑行速度
                         missing_section_description = "Missing depgate runway "
-                        # 定义在跑道上的一段 速度为3.8m/s
-                        last_seg= group.iloc[-1]['seg_dis']/3.8
-                        statistic_taxitime = group['taxi_time'].sum() +last_seg
+                        # # 定义在跑道上的一段 速度为3.8m/s
+                        # last_seg= group.iloc[-1]['seg_dis']/3.8
+                        statistic_taxitime = group['taxi_time'].sum() 
+                        # +last_seg
                 # 合并条件：满足任意一个条件时进行累加
                 if (all_rows_are_not_null) or \
                         (first_row_is_null and group.iloc[1:]['taxi_time'].notna().all()) or \
@@ -166,7 +190,7 @@ if __name__=='__main__':
  
                         flight_type=group.iloc[0]['flight_type']
                         slipline=group.iloc[0]['slipline']
-                        twentyth_time=group.iloc[0]['twentyth_time']
+                        twentyth_time=group.iloc[0]['25th_time']
                         count=group.iloc[0]['count']
                         total_taxitime .append({
                                 'flight_type': flight_type,
